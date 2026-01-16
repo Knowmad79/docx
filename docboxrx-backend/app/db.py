@@ -297,35 +297,9 @@ def init_db():
             provider TEXT,
             created_at TEXT NOT NULL,
             last_sync_at TEXT,
-            access_token TEXT,
-            refresh_token TEXT,
-            expires_at TEXT,
-            updated_at TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
     ''')
-    
-    # Login codes table for one-step onboarding
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS login_codes (
-            email TEXT PRIMARY KEY,
-            code TEXT NOT NULL,
-            expires_at TEXT NOT NULL
-        )
-    ''')
-    
-    # Add token columns for existing databases
-    if USE_POSTGRES:
-        cursor.execute('ALTER TABLE nylas_grants ADD COLUMN IF NOT EXISTS access_token TEXT')
-        cursor.execute('ALTER TABLE nylas_grants ADD COLUMN IF NOT EXISTS refresh_token TEXT')
-        cursor.execute('ALTER TABLE nylas_grants ADD COLUMN IF NOT EXISTS expires_at TEXT')
-        cursor.execute('ALTER TABLE nylas_grants ADD COLUMN IF NOT EXISTS updated_at TEXT')
-    else:
-        for column in ("access_token", "refresh_token", "expires_at", "updated_at"):
-            try:
-                cursor.execute(f'ALTER TABLE nylas_grants ADD COLUMN {column} TEXT')
-            except:
-                pass
     
     # Create indexes
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)')
@@ -554,12 +528,11 @@ def create_nylas_grant(grant: dict) -> dict:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(p('''
-        INSERT INTO nylas_grants (id, user_id, grant_id, email, provider, created_at, last_sync_at, access_token, refresh_token, expires_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO nylas_grants (id, user_id, grant_id, email, provider, created_at, last_sync_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
     '''), (
         grant['id'], grant['user_id'], grant['grant_id'], grant['email'],
-        grant.get('provider'), grant['created_at'], grant.get('last_sync_at'),
-        grant.get('access_token'), grant.get('refresh_token'), grant.get('expires_at'), grant.get('updated_at')
+        grant.get('provider'), grant['created_at'], grant.get('last_sync_at')
     ))
     conn.commit()
     release_connection(conn)
@@ -588,17 +561,6 @@ def update_nylas_grant_sync_time(grant_id: str, last_sync_at: str):
     conn.commit()
     release_connection(conn)
 
-
-def update_nylas_grant_tokens(grant_id: str, access_token: str = None, refresh_token: str = None, expires_at: str = None):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        p('UPDATE nylas_grants SET access_token = ?, refresh_token = ?, expires_at = ?, updated_at = ? WHERE grant_id = ?'),
-        (access_token, refresh_token, expires_at, datetime.utcnow().isoformat(), grant_id),
-    )
-    conn.commit()
-    release_connection(conn)
-
 def delete_nylas_grant(grant_id: str, user_id: str) -> bool:
     conn = get_connection()
     cursor = conn.cursor()
@@ -607,39 +569,6 @@ def delete_nylas_grant(grant_id: str, user_id: str) -> bool:
     conn.commit()
     release_connection(conn)
     return deleted
-
-# Login code operations
-def upsert_login_code(email: str, code: str, expires_at: str):
-    conn = get_connection()
-    cursor = conn.cursor()
-    if USE_POSTGRES:
-        cursor.execute('''
-            INSERT INTO login_codes (email, code, expires_at)
-            VALUES (%s, %s, %s)
-            ON CONFLICT (email) DO UPDATE SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at
-        ''', (email, code, expires_at))
-    else:
-        cursor.execute('''
-            INSERT OR REPLACE INTO login_codes (email, code, expires_at)
-            VALUES (?, ?, ?)
-        ''', (email, code, expires_at))
-    conn.commit()
-    release_connection(conn)
-
-def get_login_code(email: str) -> dict | None:
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(p('SELECT * FROM login_codes WHERE email = ?'), (email,))
-    row = cursor.fetchone()
-    release_connection(conn)
-    return dict(row) if row else None
-
-def delete_login_code(email: str):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(p('DELETE FROM login_codes WHERE email = ?'), (email,))
-    conn.commit()
-    release_connection(conn)
 
 # Message status operations for Action Center
 def update_message_status(message_id: str, user_id: str, status: str, snoozed_until: str = None) -> bool:

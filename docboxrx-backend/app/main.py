@@ -1,5 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, Request, Form, BackgroundTasks
-from fastapi.responses import PlainTextResponse
+from fastapi import FastAPI, Depends, HTTPException, status, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
@@ -10,7 +9,6 @@ import bcrypt
 import uuid
 import re
 import random
-import logging
 import os
 import json
 import hashlib
@@ -29,7 +27,7 @@ from app.services.ingestion import ingest_message
 NYLAS_API_KEY = os.environ.get("NYLAS_API_KEY", "nyk_v0_lPt52DfSYzutwat78WlItFejHHj2MyyZQPm1pHYQcmHO5gDWb6pIAwTanwZpHhkM")
 NYLAS_CLIENT_ID = os.environ.get("NYLAS_CLIENT_ID", "ec54cf83-8648-4e04-b547-3de100de9b48")
 NYLAS_API_URI = os.environ.get("NYLAS_API_URI", "https://api.us.nylas.com")
-NYLAS_CALLBACK_URI = os.environ.get("NYLAS_CALLBACK_URI", "http://104.238.214.91:8000/api/nylas/callback")
+NYLAS_CALLBACK_URI = os.environ.get("NYLAS_CALLBACK_URI", "https://app-nkizyevt.fly.dev/api/nylas/callback")
 
 nylas_client = NylasClient(api_key=NYLAS_API_KEY, api_uri=NYLAS_API_URI) if NYLAS_API_KEY else None
 
@@ -40,12 +38,11 @@ LLM_CONFIDENCE_THRESHOLD = 0.70  # Use LLM if rules confidence is below this
 
 app = FastAPI(title="DocBoxRX API", description="Sovereign Email Triage System")
 app.include_router(grid_router)
-logger = logging.getLogger(__name__)
 
 # Disable CORS. Do not remove this for full-stack development.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://docboxr.netlify.app", "http://localhost:5173", "http://104.238.214.91"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -85,13 +82,6 @@ class Token(BaseModel):
     access_token: str
     token_type: str
     user: dict
-
-class RequestCodeRequest(BaseModel):
-    email: EmailStr
-
-class VerifyCodeRequest(BaseModel):
-    email: EmailStr
-    code: str
 
 class EmailIngest(BaseModel):
     sender: str
@@ -323,163 +313,8 @@ jone5 = JonE5Classifier()
 async def healthz():
     return {"status": "ok", "service": "DocBoxRX API", "sentinel": "jonE5 online"}
 
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import smtplib
-
-class EmailSendRequest(BaseModel):
-    to_email: EmailStr
-    subject: str
-    body: str
-
-# 1. PASTE EMAIL
-@app.post("/api/emails/paste")
-async def paste_email(data: EmailIngest, current_user: dict = Depends(get_current_user)):
-    """Accepts raw email content and runs it through jonE5 triage."""
-    result = await ingest_message({
-        "sender": data.sender,
-        "subject": data.subject,
-        "body_plain": data.body_plain,
-        "user_id": current_user["id"]
-    })
-    return {"success": True, "message": "Email triaged and saved", "id": result.get("id")}
-
-# 2. SEND EMAIL
-@app.post("/api/emails/send")
-async def send_email(data: EmailSendRequest, current_user: dict = Depends(get_current_user)):
-    """Sends a real email using SMTP configuration."""
-    smtp_server = os.getenv("SMTP_HOST", "smtp.gmail.com")
-    smtp_port = int(os.getenv("SMTP_PORT", "587"))
-    smtp_user = os.getenv("SMTP_USER")
-    smtp_pass = os.getenv("SMTP_PASS")
-
-    if not smtp_user or not smtp_pass:
-        raise HTTPException(status_code=500, detail="SMTP not configured on server")
-
-    try:
-        msg = MIMEMultipart()
-        msg['From'] = smtp_user
-        msg['To'] = data.to_email
-        msg['Subject'] = data.subject
-        msg.attach(MIMEText(data.body, 'plain'))
-
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_pass)
-            server.send_message(msg)
-        
-        return {"success": True, "message": "Email sent successfully"}
-    except Exception as e:
-        logger.error(f"SMTP Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# 3. GET FULL CONTENT
-@app.get("/api/messages/{message_id}")
-async def get_message_detail(message_id: str, current_user: dict = Depends(get_current_user)):
-    """Returns the full email body."""
-    msg = db.get_message_by_id(message_id, current_user["id"])
-    if not msg:
-        raise HTTPException(status_code=404, detail="Message not found")
-    return msg
-
-@app.post("/api/auth/request-code")
-async def request_access_code(data: RequestCodeRequest):
-    """
-    Generate a 6-digit access code and send it to the user.
-    Auto-provisions the user and an inbox if they don't exist.
-    """
-    email = data.email.lower()
-    
-    # Generate 6-digit code
-    code = f"{random.randint(100000, 999999)}"
-    expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
-    
-    # Save code to DB
-    db.upsert_login_code(email, code, expires_at)
-    
-    # SHADOW PROVISIONING: Create user and inbox if they don't exist
-    user = db.get_user_by_email(email)
-    if not user:
-        user_id = str(uuid.uuid4())
-        # Use a random password since they won't use it (code-only login)
-        random_password = hashlib.sha256(os.urandom(32)).hexdigest()
-        hashed_password = get_password_hash(random_password)
-        
-        user = db.create_user(
-            user_id=user_id,
-            email=email,
-            name=email.split('@')[0].capitalize(),
-            practice_name="Main Clinic",
-            hashed_password=hashed_password
-        )
-        
-        # AUTO-CREATE INBOX (Source)
-        source_id = str(uuid.uuid4())
-        token = hashlib.md5(f"{user_id}-{email}".encode()).hexdigest()[:12]
-        inbound_address = f"inbox-{token}@inbound.docboxrx.com"
-        
-        db.create_source({
-            "id": source_id,
-            "user_id": user_id,
-            "name": "Main Clinic Inbox",
-            "inbound_token": token,
-            "inbound_address": inbound_address,
-            "created_at": datetime.utcnow().isoformat(),
-            "email_count": 0
-        })
-        
-        logger.info(f"Shadow provisioned user and inbox for {email}")
-
-    # TODO: Send real email. For now, we log it and return it in the response for testing.
-    logger.info(f"ACCESS CODE FOR {email}: {code}")
-    
-    # For demo/dev convenience, we return the code. Remove in production!
-    return {"success": True, "message": "Access code sent.", "dev_code": code}
-
-@app.post("/api/auth/verify", response_model=Token)
-async def verify_access_code(data: VerifyCodeRequest):
-    """
-    Verify the 6-digit access code and return a JWT.
-    """
-    email = data.email.lower()
-    code = data.code
-    
-    code_record = db.get_login_code(email)
-    if not code_record:
-        raise HTTPException(status_code=401, detail="No code requested for this email")
-    
-    if code_record["code"] != code:
-        raise HTTPException(status_code=401, detail="Invalid access code")
-    
-    expires_at = datetime.fromisoformat(code_record["expires_at"])
-    if datetime.utcnow() > expires_at:
-        db.delete_login_code(email)
-        raise HTTPException(status_code=401, detail="Access code expired")
-    
-    # Code is valid, get user and delete code
-    user = db.get_user_by_email(email)
-    db.delete_login_code(email)
-    
-    if not user:
-        # Should not happen if request-code was called
-        raise HTTPException(status_code=500, detail="User not found after verification")
-    
-    # Create JWT
-    access_token = create_access_token(data={"sub": user["id"]})
-    
-    return Token(
-        access_token=access_token, 
-        token_type="bearer", 
-        user={k: v for k, v in user.items() if k != "hashed_password"}
-    )
-
 @app.post("/api/auth/register", response_model=Token)
 async def register(user: UserCreate):
-    # #region agent log
-    with open(r'd:\dbrx\.cursor\debug.log', 'a') as f:
-        import json, time
-        f.write(json.dumps({"location":"main.py:register", "message":"Register hit", "data":{"email":user.email}, "timestamp":int(time.time()*1000), "sessionId":"debug-session", "hypothesisId":"A"}) + "\n")
-    # #endregion
     if db.email_exists(user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
     user_id = str(uuid.uuid4())
@@ -489,11 +324,6 @@ async def register(user: UserCreate):
 
 @app.post("/api/auth/login", response_model=Token)
 async def login(credentials: UserLogin):
-    # #region agent log
-    with open(r'd:\dbrx\.cursor\debug.log', 'a') as f:
-        import json, time
-        f.write(json.dumps({"location":"main.py:login", "message":"Login hit", "data":{"email":credentials.email}, "timestamp":int(time.time()*1000), "sessionId":"debug-session", "hypothesisId":"A"}) + "\n")
-    # #endregion
     user = db.get_user_by_email(credentials.email)
     if not user or not verify_password(credentials.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
@@ -879,7 +709,7 @@ Business City, ST 54321"""},
 # ============== SOURCES API ==============
 # Manage email sources (Gmail, Yahoo, Outlook accounts)
 
-INBOUND_DOMAIN = os.environ.get("INBOUND_DOMAIN", "104.238.214.91")
+INBOUND_DOMAIN = os.environ.get("INBOUND_DOMAIN", "inbound.docboxrx.com")
 
 def generate_inbound_token() -> str:
     """Generate a unique token for inbound email routing."""
@@ -1224,11 +1054,11 @@ async def get_nylas_auth_url(provider: str = "google", current_user: dict = Depe
     return {"auth_url": auth_url, "provider": provider}
 
 @app.get("/api/nylas/callback")
-async def nylas_oauth_callback(code: str, state: str = None, background_tasks: BackgroundTasks = None):
+async def nylas_oauth_callback(code: str, state: str = None):
     """Handle Nylas OAuth callback and exchange code for grant."""
     from fastapi.responses import RedirectResponse
     
-    frontend_url = "https://docboxr.netlify.app"
+    frontend_url = "https://full-stack-apps-ah1tro24.devinapps.com"
     
     if not nylas_client:
         return RedirectResponse(url=f"{frontend_url}?nylas_error=Nylas+not+configured")
@@ -1244,9 +1074,6 @@ async def nylas_oauth_callback(code: str, state: str = None, background_tasks: B
         
         grant_id = response.grant_id
         email = response.email if hasattr(response, 'email') else "unknown@email.com"
-        access_token = getattr(response, "access_token", None)
-        refresh_token = getattr(response, "refresh_token", None)
-        expires_at = getattr(response, "expires_at", None)
         
         # If we have a user_id in state, save the grant
         if state:
@@ -1263,18 +1090,8 @@ async def nylas_oauth_callback(code: str, state: str = None, background_tasks: B
                     "email": email,
                     "provider": response.provider if hasattr(response, 'provider') else None,
                     "created_at": datetime.utcnow().isoformat(),
-                    "access_token": access_token,
-                    "refresh_token": refresh_token,
-                    "expires_at": expires_at,
-                    "updated_at": datetime.utcnow().isoformat(),
                 }
                 db.create_nylas_grant(grant_record)
-            else:
-                if access_token or refresh_token or expires_at:
-                    db.update_nylas_grant_tokens(grant_id, access_token, refresh_token, expires_at)
-
-            if background_tasks:
-                background_tasks.add_task(sync_nylas_emails_for_grant, grant_id, user_id, 50)
         
         # Redirect back to frontend with success
         return RedirectResponse(url=f"{frontend_url}?nylas_success=true&email={email}")
@@ -1298,200 +1115,121 @@ async def delete_nylas_grant(grant_id: str, current_user: dict = Depends(get_cur
         return {"success": True}
     raise HTTPException(status_code=404, detail="Grant not found")
 
-async def sync_nylas_emails_for_grant(grant_id: str, user_id: str, limit: int = 50):
-    if not nylas_client:
-        raise HTTPException(status_code=500, detail="Nylas not configured")
-
-    grants = db.get_nylas_grants_by_user(user_id)
-    grant = next((g for g in grants if g["grant_id"] == grant_id), None)
-    if not grant:
-        raise HTTPException(status_code=404, detail="Grant not found")
-
-    await maybe_refresh_grant_tokens(grant)
-
-    messages_response = nylas_client.messages.list(
-        grant_id,
-        query_params={"limit": limit, "in": ["INBOX"]},
-    )
-
-    classified_count = 0
-    results = []
-
-    for msg in messages_response.data:
-        from_list = msg.from_ if hasattr(msg, "from_") else msg.get("from", [])
-        if from_list:
-            first_from = from_list[0]
-            if hasattr(first_from, "email"):
-                sender = first_from.email
-                sender_name = first_from.name if hasattr(first_from, "name") and first_from.name else sender
-            elif isinstance(first_from, dict):
-                sender = first_from.get("email", "unknown@unknown.com")
-                sender_name = first_from.get("name", sender)
-            else:
-                sender = "unknown@unknown.com"
-                sender_name = sender
-        else:
-            sender = "unknown@unknown.com"
-            sender_name = sender
-
-        subject = msg.subject if hasattr(msg, "subject") else msg.get("subject", "No Subject") or "No Subject"
-        body_raw = msg.body if hasattr(msg, "body") else msg.get("body") if isinstance(msg, dict) else None
-        snippet_raw = msg.snippet if hasattr(msg, "snippet") else msg.get("snippet", None)
-        snippet = body_raw if body_raw else snippet_raw
-
-        sender_domain = "unknown"
-        domain_match = re.search(r"@([\w.-]+)", sender)
-        if domain_match:
-            sender_domain = domain_match.group(1)
-
-        classification = jone5.classify(
-            sender=f"{sender_name} <{sender}>",
-            sender_domain=sender_domain,
-            subject=subject,
-            snippet=snippet,
-        )
-
-        message_id = str(uuid.uuid4())
-        now = datetime.utcnow()
-
-        message = {
-            "id": message_id,
-            "user_id": user_id,
-            "sender": f"{sender_name} <{sender}>",
-            "sender_domain": sender_domain,
-            "subject": subject,
-            "snippet": snippet,
-            "zone": classification.zone,
-            "confidence": classification.confidence,
-            "reason": classification.reason,
-            "jone5_message": classification.personality_message,
-            "received_at": now.isoformat(),
-            "classified_at": now.isoformat(),
-            "corrected": False,
-            "source_id": f"nylas-{grant_id}",
-            "source_name": f"Nylas: {grant['email']}",
-        }
-
-        db.create_message(message)
-        try:
-            await ingest_message(
-                {
-                    "id": message_id,
-                    "grant_id": grant_id,
-                    "subject": subject,
-                    "body": snippet,
-                    "from": sender,
-                }
-            )
-        except Exception as e:
-            logger.error("State vector ingest failed: %s", e)
-        classified_count += 1
-        results.append({"subject": subject, "zone": classification.zone})
-
-    db.update_nylas_grant_sync_time(grant_id, datetime.utcnow().isoformat())
-
-    return {
-        "success": True,
-        "synced": classified_count,
-        "results": results,
-        "jone5_says": "Zoom zoom! Emails synced and classified!",
-    }
-
-
-async def maybe_refresh_grant_tokens(grant: dict):
-    refresh_token = grant.get("refresh_token")
-    expires_at = grant.get("expires_at")
-    if not refresh_token or not expires_at:
-        return
-    try:
-        expires_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-    except Exception:
-        return
-    if expires_dt > datetime.utcnow():
-        return
-    if hasattr(nylas_client.auth, "refresh_token"):
-        response = nylas_client.auth.refresh_token(
-            {
-                "client_id": NYLAS_CLIENT_ID,
-                "client_secret": NYLAS_API_KEY,
-                "refresh_token": refresh_token,
-            }
-        )
-        access_token = getattr(response, "access_token", None)
-        refresh_token = getattr(response, "refresh_token", refresh_token)
-        expires_at = getattr(response, "expires_at", None)
-        db.update_nylas_grant_tokens(grant["grant_id"], access_token, refresh_token, expires_at)
-    else:
-        logger.warning("Nylas refresh token API not available in SDK.")
-
-
 @app.post("/api/nylas/sync/{grant_id}")
 async def sync_nylas_emails(grant_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Sync recent emails from a connected account and classify with jonE5."""
-    return await sync_nylas_emails_for_grant(grant_id, current_user["id"], limit)
-
-
-@app.post("/api/nylas/webhook")
-async def nylas_webhook(request: Request):
-    """Handle Nylas webhook events for real-time ingestion."""
     if not nylas_client:
         raise HTTPException(status_code=500, detail="Nylas not configured")
+    
+    user_id = current_user["id"]
+    
+    # Verify grant belongs to user
+    grants = db.get_nylas_grants_by_user(user_id)
+    grant = next((g for g in grants if g['grant_id'] == grant_id), None)
+    if not grant:
+        raise HTTPException(status_code=404, detail="Grant not found")
+    
     try:
-        payload = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON payload")
-
-    events = payload.get("data") or payload.get("events") or []
-    if isinstance(events, dict):
-        events = [events]
-
-    ingested = 0
-    for event in events:
-        event_type = event.get("type") or event.get("event")
-        if event_type and "message" not in event_type:
-            continue
-
-        grant_id = event.get("grant_id") or event.get("data", {}).get("grant_id")
-        message_id = event.get("object") or event.get("data", {}).get("object") or event.get("id")
-        if not grant_id or not message_id:
-            continue
-
-        try:
-            message_obj = None
-            if hasattr(nylas_client.messages, "find"):
-                message_obj = nylas_client.messages.find(grant_id, message_id)
-            if message_obj:
-                subject = message_obj.subject if hasattr(message_obj, "subject") else message_obj.get("subject")
-                snippet = message_obj.snippet if hasattr(message_obj, "snippet") else message_obj.get("snippet")
-                from_list = message_obj.from_ if hasattr(message_obj, "from_") else message_obj.get("from", [])
-                sender = "unknown@unknown.com"
-                if from_list:
-                    first_from = from_list[0]
-                    sender = first_from.email if hasattr(first_from, "email") else first_from.get("email", sender)
+        # Fetch recent messages from Nylas
+        messages_response = nylas_client.messages.list(
+            grant_id,
+            query_params={"limit": limit, "in": ["INBOX"]}
+        )
+        
+        classified_count = 0
+        results = []
+        
+        for msg in messages_response.data:
+            # Extract email details - handle both object and dict formats
+            from_list = msg.from_ if hasattr(msg, 'from_') else msg.get('from', [])
+            if from_list:
+                first_from = from_list[0]
+                if hasattr(first_from, 'email'):
+                    sender = first_from.email
+                    sender_name = first_from.name if hasattr(first_from, 'name') and first_from.name else sender
+                elif isinstance(first_from, dict):
+                    sender = first_from.get('email', 'unknown@unknown.com')
+                    sender_name = first_from.get('name', sender)
+                else:
+                    sender = "unknown@unknown.com"
+                    sender_name = sender
             else:
-                subject = event.get("data", {}).get("subject") or "No Subject"
-                snippet = event.get("data", {}).get("snippet") or ""
-                sender = event.get("data", {}).get("from") or "unknown@unknown.com"
-
-            await ingest_message(
-                {
-                    "id": message_id,
-                    "grant_id": grant_id,
-                    "subject": subject,
-                    "body": snippet,
-                    "from": sender,
-                }
+                sender = "unknown@unknown.com"
+                sender_name = sender
+            
+            subject = msg.subject if hasattr(msg, 'subject') else msg.get('subject', 'No Subject') or 'No Subject'
+            # Get full email body - try body first, then snippet (no truncation)
+            body_raw = None
+            if hasattr(msg, 'body'):
+                body_raw = msg.body
+            elif isinstance(msg, dict) and 'body' in msg:
+                body_raw = msg.get('body')
+            
+            # If body is available, use it; otherwise fall back to snippet
+            snippet_raw = msg.snippet if hasattr(msg, 'snippet') else msg.get('snippet', None)
+            # Don't truncate - store full email body so users can read entire email
+            snippet = body_raw if body_raw else snippet_raw
+            
+            # Extract domain from sender
+            sender_domain = "unknown"
+            domain_match = re.search(r'@([\w.-]+)', sender)
+            if domain_match:
+                sender_domain = domain_match.group(1)
+            
+            # Classify with jonE5
+            classification = jone5.classify(
+                sender=f"{sender_name} <{sender}>",
+                sender_domain=sender_domain,
+                subject=subject,
+                snippet=snippet
             )
-            ingested += 1
-        except Exception as exc:
-            logger.error("Webhook ingest failed: %s", exc)
-
-    return {"success": True, "ingested": ingested}
-
-
-@app.get("/api/nylas/webhook")
-async def nylas_webhook_challenge(challenge: str | None = None):
-    """Respond to Nylas webhook verification challenge."""
-    if not challenge:
-        raise HTTPException(status_code=400, detail="Missing challenge")
-    return PlainTextResponse(content=challenge)
+            
+            # Store message
+            message_id = str(uuid.uuid4())
+            now = datetime.utcnow()
+            
+            message = {
+                "id": message_id,
+                "user_id": user_id,
+                "sender": f"{sender_name} <{sender}>",
+                "sender_domain": sender_domain,
+                "subject": subject,
+                "snippet": snippet,
+                "zone": classification.zone,
+                "confidence": classification.confidence,
+                "reason": classification.reason,
+                "jone5_message": classification.personality_message,
+                "received_at": now.isoformat(),
+                "classified_at": now.isoformat(),
+                "corrected": False,
+                "source_id": f"nylas-{grant_id}",
+                "source_name": f"Nylas: {grant['email']}"
+            }
+            
+            db.create_message(message)
+            try:
+                await ingest_message(
+                    {
+                        "id": message_id,
+                        "grant_id": grant_id,
+                        "subject": subject,
+                        "body": snippet,
+                        "from": sender,
+                    }
+                )
+            except Exception as e:
+                print(f"State vector ingest failed: {e}")
+            classified_count += 1
+            results.append({"subject": subject, "zone": classification.zone})
+        
+        # Update last sync time
+        db.update_nylas_grant_sync_time(grant_id, datetime.utcnow().isoformat())
+        
+        return {
+            "success": True,
+            "synced": classified_count,
+            "results": results,
+            "jone5_says": "Zoom zoom! Emails synced and classified!"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sync failed: {str(e)}")
