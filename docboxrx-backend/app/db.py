@@ -305,6 +305,15 @@ def init_db():
         )
     ''')
     
+    # Login codes table for one-step onboarding
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS login_codes (
+            email TEXT PRIMARY KEY,
+            code TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        )
+    ''')
+    
     # Add token columns for existing databases
     if USE_POSTGRES:
         cursor.execute('ALTER TABLE nylas_grants ADD COLUMN IF NOT EXISTS access_token TEXT')
@@ -598,6 +607,39 @@ def delete_nylas_grant(grant_id: str, user_id: str) -> bool:
     conn.commit()
     release_connection(conn)
     return deleted
+
+# Login code operations
+def upsert_login_code(email: str, code: str, expires_at: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    if USE_POSTGRES:
+        cursor.execute('''
+            INSERT INTO login_codes (email, code, expires_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (email) DO UPDATE SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at
+        ''', (email, code, expires_at))
+    else:
+        cursor.execute('''
+            INSERT OR REPLACE INTO login_codes (email, code, expires_at)
+            VALUES (?, ?, ?)
+        ''', (email, code, expires_at))
+    conn.commit()
+    release_connection(conn)
+
+def get_login_code(email: str) -> dict | None:
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(p('SELECT * FROM login_codes WHERE email = ?'), (email,))
+    row = cursor.fetchone()
+    release_connection(conn)
+    return dict(row) if row else None
+
+def delete_login_code(email: str):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(p('DELETE FROM login_codes WHERE email = ?'), (email,))
+    conn.commit()
+    release_connection(conn)
 
 # Message status operations for Action Center
 def update_message_status(message_id: str, user_id: str, status: str, snoozed_until: str = None) -> bool:

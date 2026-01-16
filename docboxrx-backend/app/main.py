@@ -86,6 +86,13 @@ class Token(BaseModel):
     token_type: str
     user: dict
 
+class RequestCodeRequest(BaseModel):
+    email: EmailStr
+
+class VerifyCodeRequest(BaseModel):
+    email: EmailStr
+    code: str
+
 class EmailIngest(BaseModel):
     sender: str
     sender_domain: Optional[str] = None
@@ -315,6 +322,97 @@ jone5 = JonE5Classifier()
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok", "service": "DocBoxRX API", "sentinel": "jonE5 online"}
+
+@app.post("/api/auth/request-code")
+async def request_access_code(data: RequestCodeRequest):
+    """
+    Generate a 6-digit access code and send it to the user.
+    Auto-provisions the user and an inbox if they don't exist.
+    """
+    email = data.email.lower()
+    
+    # Generate 6-digit code
+    code = f"{random.randint(100000, 999999)}"
+    expires_at = (datetime.utcnow() + timedelta(minutes=10)).isoformat()
+    
+    # Save code to DB
+    db.upsert_login_code(email, code, expires_at)
+    
+    # SHADOW PROVISIONING: Create user and inbox if they don't exist
+    user = db.get_user_by_email(email)
+    if not user:
+        user_id = str(uuid.uuid4())
+        # Use a random password since they won't use it (code-only login)
+        random_password = hashlib.sha256(os.urandom(32)).hexdigest()
+        hashed_password = get_password_hash(random_password)
+        
+        user = db.create_user(
+            user_id=user_id,
+            email=email,
+            name=email.split('@')[0].capitalize(),
+            practice_name="Main Clinic",
+            hashed_password=hashed_password
+        )
+        
+        # AUTO-CREATE INBOX (Source)
+        source_id = str(uuid.uuid4())
+        token = hashlib.md5(f"{user_id}-{email}".encode()).hexdigest()[:12]
+        inbound_address = f"inbox-{token}@inbound.docboxrx.com"
+        
+        db.create_source({
+            "id": source_id,
+            "user_id": user_id,
+            "name": "Main Clinic Inbox",
+            "inbound_token": token,
+            "inbound_address": inbound_address,
+            "created_at": datetime.utcnow().isoformat(),
+            "email_count": 0
+        })
+        
+        logger.info(f"Shadow provisioned user and inbox for {email}")
+
+    # TODO: Send real email. For now, we log it and return it in the response for testing.
+    logger.info(f"ACCESS CODE FOR {email}: {code}")
+    
+    # For demo/dev convenience, we return the code. Remove in production!
+    return {"success": True, "message": "Access code sent.", "dev_code": code}
+
+@app.post("/api/auth/verify", response_model=Token)
+async def verify_access_code(data: VerifyCodeRequest):
+    """
+    Verify the 6-digit access code and return a JWT.
+    """
+    email = data.email.lower()
+    code = data.code
+    
+    code_record = db.get_login_code(email)
+    if not code_record:
+        raise HTTPException(status_code=401, detail="No code requested for this email")
+    
+    if code_record["code"] != code:
+        raise HTTPException(status_code=401, detail="Invalid access code")
+    
+    expires_at = datetime.fromisoformat(code_record["expires_at"])
+    if datetime.utcnow() > expires_at:
+        db.delete_login_code(email)
+        raise HTTPException(status_code=401, detail="Access code expired")
+    
+    # Code is valid, get user and delete code
+    user = db.get_user_by_email(email)
+    db.delete_login_code(email)
+    
+    if not user:
+        # Should not happen if request-code was called
+        raise HTTPException(status_code=500, detail="User not found after verification")
+    
+    # Create JWT
+    access_token = create_access_token(data={"sub": user["id"]})
+    
+    return Token(
+        access_token=access_token, 
+        token_type="bearer", 
+        user={k: v for k, v in user.items() if k != "hashed_password"}
+    )
 
 @app.post("/api/auth/register", response_model=Token)
 async def register(user: UserCreate):

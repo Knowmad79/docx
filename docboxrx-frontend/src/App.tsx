@@ -83,6 +83,8 @@ function App() {
   const [jone5Message, setJone5Message] = useState<string>('')
   const [isLoginMode, setIsLoginMode] = useState(true)
   const [loginForm, setLoginForm] = useState({ email: '', password: '', name: '', practice_name: '' })
+  const [authStep, setAuthStep] = useState(1) // 1: Email, 2: Code
+  const [authCode, setAuthCode] = useState('')
   const [ingestForm, setIngestForm] = useState({ sender: '', subject: '', snippet: '' })
   const [ingestOpen, setIngestOpen] = useState(false)
   const [sourceOpen, setSourceOpen] = useState(false)
@@ -203,20 +205,44 @@ function App() {
     }
   }
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleRequestCode = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     try {
-      const endpoint = isLoginMode ? '/api/auth/login' : '/api/auth/register'
-      const body = isLoginMode ? { email: loginForm.email, password: loginForm.password } : loginForm
-      const data = await apiCall(endpoint, { method: 'POST', body: JSON.stringify(body) })
+      const data = await apiCall('/api/auth/request-code', { 
+        method: 'POST', 
+        body: JSON.stringify({ email: loginForm.email }) 
+      })
+      if (data.success) {
+        setAuthStep(2)
+        setJone5Message("Access code sent to your email.")
+        // For development convenience, we can pre-fill the code if returned
+        if (data.dev_code) {
+          console.log('DEV CODE:', data.dev_code)
+        }
+      }
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to send code')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleVerifyCode = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setLoading(true)
+    try {
+      const data = await apiCall('/api/auth/verify', { 
+        method: 'POST', 
+        body: JSON.stringify({ email: loginForm.email, code: authCode }) 
+      })
       setToken(data.access_token)
       setUser(data.user)
       localStorage.setItem('docboxrx_token', data.access_token)
       localStorage.setItem('docboxrx_user', JSON.stringify(data.user))
       setJone5Message("Welcome! jonE5 is ready.")
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Login failed')
+      alert(error instanceof Error ? error.message : 'Invalid code')
     } finally {
       setLoading(false)
     }
@@ -226,6 +252,8 @@ function App() {
     setToken(null)
     setUser(null)
     setZoneData(null)
+    setAuthStep(1)
+    setAuthCode('')
     localStorage.removeItem('docboxrx_token')
     localStorage.removeItem('docboxrx_user')
   }
@@ -324,35 +352,69 @@ function App() {
   if (!user) {
     return (
       <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
-        <Card className="w-full max-w-md bg-zinc-900 border-zinc-800">
-          <CardHeader className="text-center pb-4">
+        <div className="max-w-md w-full">
+          <div className="text-center mb-8">
             <div className="w-16 h-16 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-2xl flex items-center justify-center mx-auto mb-4">
-              <Bot className="w-9 h-9 text-white" />
+              <Bot className="w-10 h-10 text-white" />
             </div>
-                        <CardTitle className="text-2xl font-bold text-zinc-100">DocBoxRX</CardTitle>
-                        <CardDescription className="text-zinc-500">Smart Email Assistant</CardDescription>
-                        <p className="text-xs text-emerald-500 mt-1">Powered by jonE5 AI Agent</p>
-          </CardHeader>
-          <CardContent>
-            <Tabs value={isLoginMode ? 'login' : 'register'} onValueChange={(v) => setIsLoginMode(v === 'login')}>
-              <TabsList className="grid w-full grid-cols-2 mb-6 bg-zinc-800">
-                <TabsTrigger value="login" className="data-[state=active]:bg-emerald-600 text-zinc-400 data-[state=active]:text-white">Login</TabsTrigger>
-                <TabsTrigger value="register" className="data-[state=active]:bg-emerald-600 text-zinc-400 data-[state=active]:text-white">Register</TabsTrigger>
-              </TabsList>
-              <form onSubmit={handleLogin} className="space-y-4">
-                {!isLoginMode && (
-                  <>
-                    <div><Label className="text-zinc-400 text-sm">Name</Label><Input placeholder="Dr. Smith" value={loginForm.name} onChange={(e) => setLoginForm({ ...loginForm, name: e.target.value })} required={!isLoginMode} className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1" /></div>
-                    <div><Label className="text-zinc-400 text-sm">Practice</Label><Input placeholder="Smith Dental" value={loginForm.practice_name} onChange={(e) => setLoginForm({ ...loginForm, practice_name: e.target.value })} className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1" /></div>
-                  </>
-                )}
-                <div><Label className="text-zinc-400 text-sm">Email</Label><Input type="email" placeholder="doctor@practice.com" value={loginForm.email} onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} required className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1" /></div>
-                <div><Label className="text-zinc-400 text-sm">Password</Label><Input type="password" placeholder="********" value={loginForm.password} onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} required className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1" /></div>
-                <Button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white" disabled={loading}>{loading ? 'Please wait...' : (isLoginMode ? 'Login' : 'Create Account')}</Button>
-              </form>
-            </Tabs>
-          </CardContent>
-        </Card>
+            <h1 className="text-3xl font-bold text-zinc-100">DocBoxRX</h1>
+            <p className="text-zinc-400 mt-2">Doctor-Proof Clinical Triage</p>
+          </div>
+
+          <Card className="bg-zinc-900 border-zinc-800 shadow-xl">
+            <CardHeader>
+              <CardTitle className="text-zinc-100">{authStep === 1 ? 'Enter your medical email' : 'Verify Access'}</CardTitle>
+              <CardDescription className="text-zinc-400">
+                {authStep === 1 ? 'We will send you a 6-digit access code.' : `Code sent to ${loginForm.email}`}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {authStep === 1 ? (
+                <form onSubmit={handleRequestCode} className="space-y-4">
+                  <div>
+                    <Label className="text-zinc-400 text-sm">Medical Email</Label>
+                    <Input 
+                      type="email" 
+                      placeholder="doctor@practice.com" 
+                      value={loginForm.email} 
+                      onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} 
+                      required 
+                      className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1 h-12 text-lg" 
+                    />
+                  </div>
+                  <Button type="submit" className="w-full h-12 text-lg bg-emerald-600 hover:bg-emerald-700 text-white" disabled={loading}>
+                    {loading ? 'Sending Code...' : 'Get Access Code'}
+                  </Button>
+                </form>
+              ) : (
+                <form onSubmit={handleVerifyCode} className="space-y-4">
+                  <div>
+                    <Label className="text-zinc-400 text-sm">6-Digit Code</Label>
+                    <Input 
+                      type="text" 
+                      placeholder="000000" 
+                      maxLength={6}
+                      value={authCode} 
+                      onChange={(e) => setAuthCode(e.target.value)} 
+                      required 
+                      className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1 h-16 text-3xl text-center tracking-widest font-mono" 
+                    />
+                  </div>
+                  <Button type="submit" className="w-full h-12 text-lg bg-emerald-600 hover:bg-emerald-700 text-white" disabled={loading}>
+                    {loading ? 'Verifying...' : 'Enter Dashboard'}
+                  </Button>
+                  <Button type="button" variant="ghost" className="w-full text-zinc-500 hover:text-zinc-300" onClick={() => setAuthStep(1)}>
+                    Back to email
+                  </Button>
+                </form>
+              )}
+            </CardContent>
+          </Card>
+          
+          <div className="mt-8 text-center">
+            <p className="text-zinc-600 text-sm">Powered by jonE5 AI Agent</p>
+          </div>
+        </div>
       </div>
     )
   }
