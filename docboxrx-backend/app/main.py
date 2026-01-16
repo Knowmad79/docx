@@ -29,7 +29,7 @@ from app.services.ingestion import ingest_message
 NYLAS_API_KEY = os.environ.get("NYLAS_API_KEY", "nyk_v0_lPt52DfSYzutwat78WlItFejHHj2MyyZQPm1pHYQcmHO5gDWb6pIAwTanwZpHhkM")
 NYLAS_CLIENT_ID = os.environ.get("NYLAS_CLIENT_ID", "ec54cf83-8648-4e04-b547-3de100de9b48")
 NYLAS_API_URI = os.environ.get("NYLAS_API_URI", "https://api.us.nylas.com")
-NYLAS_CALLBACK_URI = os.environ.get("NYLAS_CALLBACK_URI", "https://app-nkizyevt.fly.dev/api/nylas/callback")
+NYLAS_CALLBACK_URI = os.environ.get("NYLAS_CALLBACK_URI", "http://104.238.214.91:8000/api/nylas/callback")
 
 nylas_client = NylasClient(api_key=NYLAS_API_KEY, api_uri=NYLAS_API_URI) if NYLAS_API_KEY else None
 
@@ -1228,7 +1228,7 @@ async def nylas_oauth_callback(code: str, state: str = None, background_tasks: B
     """Handle Nylas OAuth callback and exchange code for grant."""
     from fastapi.responses import RedirectResponse
     
-    frontend_url = "https://full-stack-apps-ah1tro24.devinapps.com"
+    frontend_url = "https://docboxr.netlify.app"
     
     if not nylas_client:
         return RedirectResponse(url=f"{frontend_url}?nylas_error=Nylas+not+configured")
