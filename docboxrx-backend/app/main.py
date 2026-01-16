@@ -475,6 +475,11 @@ async def verify_access_code(data: VerifyCodeRequest):
 
 @app.post("/api/auth/register", response_model=Token)
 async def register(user: UserCreate):
+    # #region agent log
+    with open(r'd:\dbrx\.cursor\debug.log', 'a') as f:
+        import json, time
+        f.write(json.dumps({"location":"main.py:register", "message":"Register hit", "data":{"email":user.email}, "timestamp":int(time.time()*1000), "sessionId":"debug-session", "hypothesisId":"A"}) + "\n")
+    # #endregion
     if db.email_exists(user.email):
         raise HTTPException(status_code=400, detail="Email already registered")
     user_id = str(uuid.uuid4())
@@ -484,6 +489,11 @@ async def register(user: UserCreate):
 
 @app.post("/api/auth/login", response_model=Token)
 async def login(credentials: UserLogin):
+    # #region agent log
+    with open(r'd:\dbrx\.cursor\debug.log', 'a') as f:
+        import json, time
+        f.write(json.dumps({"location":"main.py:login", "message":"Login hit", "data":{"email":credentials.email}, "timestamp":int(time.time()*1000), "sessionId":"debug-session", "hypothesisId":"A"}) + "\n")
+    # #endregion
     user = db.get_user_by_email(credentials.email)
     if not user or not verify_password(credentials.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")

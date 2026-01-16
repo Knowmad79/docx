@@ -83,8 +83,9 @@ function App() {
   const [jone5Message, setJone5Message] = useState<string>('')
   const [isLoginMode, setIsLoginMode] = useState(true)
   const [loginForm, setLoginForm] = useState({ email: '', password: '', name: '', practice_name: '' })
-  const [authStep, setAuthStep] = useState(1) // 1: Email, 2: Code
-  const [authCode, setAuthCode] = useState('')
+  const [isLoginMode, setIsLoginMode] = useState(true)
+  const [replyText, setReplyText] = useState('')
+  const [isReplyOpen, setIsReplyOpen] = useState(false)
   const [ingestForm, setIngestForm] = useState({ sender: '', subject: '', snippet: '' })
   const [ingestOpen, setIngestOpen] = useState(false)
   const [sourceOpen, setSourceOpen] = useState(false)
@@ -97,6 +98,9 @@ function App() {
   const [viewMode, setViewMode] = useState<'grid' | 'inbox'>('grid')
 
   useEffect(() => {
+    // #region agent log
+    fetch('http://127.0.0.1:7242/ingest/2c454770-d404-4dc4-98da-6ec2100a4e58',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'App.tsx:useEffect',message:'App mounted',data:{user:!!user,authStep,isLoginMode},timestamp:Date.now(),sessionId:'debug-session',hypothesisId:'A'})}).catch(()=>{});
+    // #endregion
     const savedToken = localStorage.getItem('docboxrx_token')
     const savedUser = localStorage.getItem('docboxrx_user')
     if (savedToken && savedUser) {
@@ -205,44 +209,68 @@ function App() {
     }
   }
 
-  const handleRequestCode = async (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     try {
-      const data = await apiCall('/api/auth/request-code', { 
+      const data = await apiCall('/api/auth/login', { 
         method: 'POST', 
-        body: JSON.stringify({ email: loginForm.email }) 
+        body: JSON.stringify({ email: loginForm.email, password: loginForm.password }) 
       })
-      if (data.success) {
-        setAuthStep(2)
-        setJone5Message("Access code sent to your email.")
-        // For development convenience, we can pre-fill the code if returned
-        if (data.dev_code) {
-          console.log('DEV CODE:', data.dev_code)
-        }
+      if (data) {
+        setToken(data.access_token)
+        setUser(data.user)
+        localStorage.setItem('docboxrx_token', data.access_token)
+        localStorage.setItem('docboxrx_user', JSON.stringify(data.user))
+        setJone5Message("Welcome back! jonE5 is ready.")
       }
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to send code')
+      alert(error instanceof Error ? error.message : 'Login failed')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleVerifyCode = async (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault()
     setLoading(true)
     try {
-      const data = await apiCall('/api/auth/verify', { 
+      const data = await apiCall('/api/auth/register', { 
         method: 'POST', 
-        body: JSON.stringify({ email: loginForm.email, code: authCode }) 
+        body: JSON.stringify(loginForm) 
       })
-      setToken(data.access_token)
-      setUser(data.user)
-      localStorage.setItem('docboxrx_token', data.access_token)
-      localStorage.setItem('docboxrx_user', JSON.stringify(data.user))
-      setJone5Message("Welcome! jonE5 is ready.")
+      if (data) {
+        setToken(data.access_token)
+        setUser(data.user)
+        localStorage.setItem('docboxrx_token', data.access_token)
+        localStorage.setItem('docboxrx_user', JSON.stringify(data.user))
+        setJone5Message("Account created! Let's get started.")
+      }
     } catch (error) {
-      alert(error instanceof Error ? error.message : 'Invalid code')
+      alert(error instanceof Error ? error.message : 'Registration failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleSendReply = async () => {
+    if (!selectedMessage) return
+    setLoading(true)
+    try {
+      const senderEmail = selectedMessage.sender.match(/<([^>]+)>/)?.[1] || selectedMessage.sender.match(/[\w.-]+@[\w.-]+/)?.[0] || selectedMessage.sender
+      await apiCall('/api/emails/send', {
+        method: 'POST',
+        body: JSON.stringify({
+          to_email: senderEmail,
+          subject: `Re: ${selectedMessage.subject}`,
+          body: replyText
+        })
+      })
+      setJone5Message("Reply sent via SMTP!")
+      setIsReplyOpen(false)
+      setReplyText('')
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to send reply')
     } finally {
       setLoading(false)
     }
@@ -267,6 +295,18 @@ function App() {
       console.error('Failed to fetch messages:', error)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleSelectMessage = async (msg: Message) => {
+    setSelectedMessage(msg)
+    try {
+      const fullMsg = await apiCall(`/api/messages/${msg.id}`)
+      if (fullMsg) {
+        setSelectedMessage(fullMsg)
+      }
+    } catch (error) {
+      console.error('Failed to fetch full message:', error)
     }
   }
 
@@ -363,51 +403,79 @@ function App() {
 
           <Card className="bg-zinc-900 border-zinc-800 shadow-xl">
             <CardHeader>
-              <CardTitle className="text-zinc-100">{authStep === 1 ? 'Enter your medical email' : 'Verify Access'}</CardTitle>
+              <div className="flex gap-4 mb-4">
+                <Button 
+                  variant={isLoginMode ? 'default' : 'ghost'} 
+                  className={`flex-1 ${isLoginMode ? 'bg-emerald-600' : 'text-zinc-400'}`}
+                  onClick={() => setIsLoginMode(true)}
+                >
+                  Login
+                </Button>
+                <Button 
+                  variant={!isLoginMode ? 'default' : 'ghost'} 
+                  className={`flex-1 ${!isLoginMode ? 'bg-emerald-600' : 'text-zinc-400'}`}
+                  onClick={() => setIsLoginMode(false)}
+                >
+                  Register
+                </Button>
+              </div>
+              <CardTitle className="text-zinc-100">{isLoginMode ? 'Welcome Back' : 'Create Account'}</CardTitle>
               <CardDescription className="text-zinc-400">
-                {authStep === 1 ? 'We will send you a 6-digit access code.' : `Code sent to ${loginForm.email}`}
+                {isLoginMode ? 'Log in to your clinical dashboard' : 'Register your medical practice'}
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {authStep === 1 ? (
-                <form onSubmit={handleRequestCode} className="space-y-4">
-                  <div>
-                    <Label className="text-zinc-400 text-sm">Medical Email</Label>
-                    <Input 
-                      type="email" 
-                      placeholder="doctor@practice.com" 
-                      value={loginForm.email} 
-                      onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} 
-                      required 
-                      className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1 h-12 text-lg" 
-                    />
-                  </div>
-                  <Button type="submit" className="w-full h-12 text-lg bg-emerald-600 hover:bg-emerald-700 text-white" disabled={loading}>
-                    {loading ? 'Sending Code...' : 'Get Access Code'}
-                  </Button>
-                </form>
-              ) : (
-                <form onSubmit={handleVerifyCode} className="space-y-4">
-                  <div>
-                    <Label className="text-zinc-400 text-sm">6-Digit Code</Label>
-                    <Input 
-                      type="text" 
-                      placeholder="000000" 
-                      maxLength={6}
-                      value={authCode} 
-                      onChange={(e) => setAuthCode(e.target.value)} 
-                      required 
-                      className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1 h-16 text-3xl text-center tracking-widest font-mono" 
-                    />
-                  </div>
-                  <Button type="submit" className="w-full h-12 text-lg bg-emerald-600 hover:bg-emerald-700 text-white" disabled={loading}>
-                    {loading ? 'Verifying...' : 'Enter Dashboard'}
-                  </Button>
-                  <Button type="button" variant="ghost" className="w-full text-zinc-500 hover:text-zinc-300" onClick={() => setAuthStep(1)}>
-                    Back to email
-                  </Button>
-                </form>
-              )}
+              <form onSubmit={isLoginMode ? handleLogin : handleRegister} className="space-y-4">
+                {!isLoginMode && (
+                  <>
+                    <div>
+                      <Label className="text-zinc-400 text-sm">Full Name</Label>
+                      <Input 
+                        placeholder="Dr. Smith" 
+                        value={loginForm.name} 
+                        onChange={(e) => setLoginForm({ ...loginForm, name: e.target.value })} 
+                        required 
+                        className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1" 
+                      />
+                    </div>
+                    <div>
+                      <Label className="text-zinc-400 text-sm">Practice Name</Label>
+                      <Input 
+                        placeholder="Main Street Clinic" 
+                        value={loginForm.practice_name} 
+                        onChange={(e) => setLoginForm({ ...loginForm, practice_name: e.target.value })} 
+                        required 
+                        className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1" 
+                      />
+                    </div>
+                  </>
+                )}
+                <div>
+                  <Label className="text-zinc-400 text-sm">Medical Email</Label>
+                  <Input 
+                    type="email" 
+                    placeholder="doctor@practice.com" 
+                    value={loginForm.email} 
+                    onChange={(e) => setLoginForm({ ...loginForm, email: e.target.value })} 
+                    required 
+                    className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1" 
+                  />
+                </div>
+                <div>
+                  <Label className="text-zinc-400 text-sm">Password</Label>
+                  <Input 
+                    type="password" 
+                    placeholder="••••••••" 
+                    value={loginForm.password} 
+                    onChange={(e) => setLoginForm({ ...loginForm, password: e.target.value })} 
+                    required 
+                    className="bg-zinc-800 border-zinc-700 text-zinc-100 mt-1" 
+                  />
+                </div>
+                <Button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-700 text-white" disabled={loading}>
+                  {loading ? 'Processing...' : (isLoginMode ? 'Login' : 'Register')}
+                </Button>
+              </form>
             </CardContent>
           </Card>
           
@@ -542,7 +610,7 @@ function App() {
                 </div>
               ) : (
                 filteredMessages.map((msg) => (
-                  <div key={msg.id} onClick={() => setSelectedMessage(msg)} className={`p-3 border-b border-zinc-800 cursor-pointer hover:bg-zinc-800/50 transition-colors ${selectedMessage?.id === msg.id ? 'bg-zinc-800 border-l-2 border-l-emerald-500' : ''}`}>
+                  <div key={msg.id} onClick={() => handleSelectMessage(msg)} className={`p-3 border-b border-zinc-800 cursor-pointer hover:bg-zinc-800/50 transition-colors ${selectedMessage?.id === msg.id ? 'bg-zinc-800 border-l-2 border-l-emerald-500' : ''}`}>
                     <div className="flex items-center gap-2 mb-1">
                       <Badge className={`text-xs px-1.5 py-0 border ${zoneConfig[msg.zone].pillBg}`}>{zoneConfig[msg.zone].label}</Badge>
                       <span className="text-xs text-zinc-500 truncate flex-1">{msg.sender}</span>
@@ -585,11 +653,39 @@ function App() {
               <div className="flex-1 overflow-y-auto p-4 space-y-4">
                 {/* Email Body */}
                 <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
-                  <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">Email Content</h3>
+                  <h3 className="text-xs font-semibold text-zinc-500 uppercase tracking-wide mb-3">Full Email Content</h3>
                   <div className="text-sm text-zinc-300 whitespace-pre-wrap leading-relaxed">
-                    {selectedMessage.snippet || 'No email body available. The email content will appear here when synced from your email provider or when you paste the full email content.'}
+                    {selectedMessage.snippet || 'No email body available.'}
                   </div>
                 </div>
+
+                {/* Internal Reply Modal */}
+                <Dialog open={isReplyOpen} onOpenChange={setIsReplyOpen}>
+                  <DialogContent className="bg-zinc-900 border-zinc-700 text-zinc-100 sm:max-w-[600px]">
+                    <DialogHeader>
+                      <DialogTitle>Reply to: {selectedMessage.subject}</DialogTitle>
+                      <DialogDescription className="text-zinc-400">Your reply will be sent via DocBoxRX SMTP server.</DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-4 py-4">
+                      <div className="bg-zinc-800 p-3 rounded text-xs text-zinc-400 border border-zinc-700">
+                        Replying to: {selectedMessage.sender}
+                      </div>
+                      <Textarea 
+                        placeholder="Type your clinical response..." 
+                        value={replyText} 
+                        onChange={(e) => setReplyText(e.target.value)} 
+                        rows={10}
+                        className="bg-zinc-800 border-zinc-700 text-zinc-100"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-3">
+                      <Button variant="ghost" onClick={() => setIsReplyOpen(false)} className="text-zinc-400">Cancel</Button>
+                      <Button onClick={handleSendReply} disabled={loading || !replyText} className="bg-emerald-600 hover:bg-emerald-700">
+                        <Send className="w-4 h-4 mr-2" /> Send Native Reply
+                      </Button>
+                    </div>
+                  </DialogContent>
+                </Dialog>
 
                 {/* jonE5 AI Analysis */}
                 <div className="bg-gradient-to-br from-emerald-950/50 to-teal-950/30 border border-emerald-800/50 rounded-lg p-4">
@@ -631,12 +727,7 @@ function App() {
                         <Button size="sm" variant="outline" onClick={() => copyToClipboard(selectedMessage.draft_reply || `Thank you for your email regarding "${selectedMessage.subject}".\n\nI have reviewed the information and will respond accordingly.\n\nBest regards,\n${user.name}`)} className="bg-zinc-800 border-zinc-700 text-zinc-300 hover:bg-zinc-700">
                           <Copy className="w-4 h-4 mr-1" />Copy Reply
                         </Button>
-                        <Button size="sm" onClick={() => {
-                          const senderEmail = selectedMessage.sender.match(/<([^>]+)>/)?.[1] || selectedMessage.sender.match(/[\w.-]+@[\w.-]+/)?.[0] || selectedMessage.sender;
-                          const subject = `Re: ${selectedMessage.subject}`;
-                          const body = selectedMessage.draft_reply || `Thank you for your email regarding "${selectedMessage.subject}".\n\nI have reviewed the information and will respond accordingly.\n\nBest regards,\n${user.name}`;
-                          window.open(`mailto:${encodeURIComponent(senderEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`, '_blank');
-                        }} className="bg-emerald-700 hover:bg-emerald-600 text-white">
+                        <Button size="sm" onClick={() => setIsReplyOpen(true)} className="bg-emerald-700 hover:bg-emerald-600 text-white">
                           <Send className="w-4 h-4 mr-1" />Send Reply
                         </Button>
                       </div>
