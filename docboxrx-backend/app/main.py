@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # Disable CORS. Do not remove this for full-stack development.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://docboxr.netlify.app", "http://localhost:5173", "http://104.238.214.91"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -879,7 +879,7 @@ Business City, ST 54321"""},
 # ============== SOURCES API ==============
 # Manage email sources (Gmail, Yahoo, Outlook accounts)
 
-INBOUND_DOMAIN = os.environ.get("INBOUND_DOMAIN", "inbound.docboxrx.com")
+INBOUND_DOMAIN = os.environ.get("INBOUND_DOMAIN", "104.238.214.91")
 
 def generate_inbound_token() -> str:
     """Generate a unique token for inbound email routing."""
