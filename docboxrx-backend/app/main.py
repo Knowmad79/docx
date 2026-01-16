@@ -323,6 +323,65 @@ jone5 = JonE5Classifier()
 async def healthz():
     return {"status": "ok", "service": "DocBoxRX API", "sentinel": "jonE5 online"}
 
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import smtplib
+
+class EmailSendRequest(BaseModel):
+    to_email: EmailStr
+    subject: str
+    body: str
+
+# 1. PASTE EMAIL
+@app.post("/api/emails/paste")
+async def paste_email(data: EmailIngest, current_user: dict = Depends(get_current_user)):
+    """Accepts raw email content and runs it through jonE5 triage."""
+    result = await ingest_message({
+        "sender": data.sender,
+        "subject": data.subject,
+        "body_plain": data.body_plain,
+        "user_id": current_user["id"]
+    })
+    return {"success": True, "message": "Email triaged and saved", "id": result.get("id")}
+
+# 2. SEND EMAIL
+@app.post("/api/emails/send")
+async def send_email(data: EmailSendRequest, current_user: dict = Depends(get_current_user)):
+    """Sends a real email using SMTP configuration."""
+    smtp_server = os.getenv("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+
+    if not smtp_user or not smtp_pass:
+        raise HTTPException(status_code=500, detail="SMTP not configured on server")
+
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = smtp_user
+        msg['To'] = data.to_email
+        msg['Subject'] = data.subject
+        msg.attach(MIMEText(data.body, 'plain'))
+
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        
+        return {"success": True, "message": "Email sent successfully"}
+    except Exception as e:
+        logger.error(f"SMTP Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 3. GET FULL CONTENT
+@app.get("/api/messages/{message_id}")
+async def get_message_detail(message_id: str, current_user: dict = Depends(get_current_user)):
+    """Returns the full email body."""
+    msg = db.get_message_by_id(message_id, current_user["id"])
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    return msg
+
 @app.post("/api/auth/request-code")
 async def request_access_code(data: RequestCodeRequest):
     """
